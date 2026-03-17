@@ -1,29 +1,25 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { AppController } from './app.controller';
-import { ChatController } from './chat.controller';
-import { AuthService } from './auth.service';
-import { ChatService } from './chat.service';
-import { ChatGateway } from './chat.gateway';
-import { User } from './entities/user.entity';
-import { Room } from './entities/room.entity';
-import { Message } from './entities/message.entity';
+import { AuthModule } from './auth/auth.module';
+import { ChatModule } from './chat/chat.module';
+import { User } from './auth/entities/user.entity';
+import { Room } from './chat/entities/room.entity';
+import { Message } from './chat/entities/message.entity';
 
 @Module({
   imports: [
     TypeOrmModule.forRoot({
       type: 'postgres',
-      host: process.env.DB_HOST || 'localhost',
-      port: 5432,
-      username: 'postgres',
-      password: 'postgres',
-      database: 'chatdb',
+      host: process.env.DB_HOST ?? 'localhost',
+      port: parseInt(process.env.DB_PORT ?? '5432'),
+      username: process.env.DB_USER ?? 'postgres',
+      password: process.env.DB_PASSWORD ?? 'postgres',
+      database: process.env.DB_NAME ?? 'chatdb',
       entities: [User, Room, Message],
-      synchronize: true, // never use in production
+      synchronize: true,
     }),
-    TypeOrmModule.forFeature([User, Room, Message]),
+    AuthModule,
+    ChatModule,
   ],
-  controllers: [AppController, ChatController],
-  providers: [AuthService, ChatService, ChatGateway],
 })
 export class AppModule {}
