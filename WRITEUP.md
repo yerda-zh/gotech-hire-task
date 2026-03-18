@@ -574,3 +574,17 @@ request, making `JwtAuthGuard` reject all valid tokens with a 401.
 
 **Fix:** Corrected to `auth.replace('Bearer ', '')` — a single character fix that made
 all protected routes functional.
+
+### 47. ChatPage Exceeded 400 Lines With Mixed Responsibilities
+**File:** `frontend/src/components/ChatPage.tsx`
+
+**Problem:** ChatPage handled room creation, message input, WebSocket events, data
+fetching, and layout all in one component — violating the single responsibility principle
+and making the component difficult to maintain.
+
+**Fix:** Extracted two focused components:
+- `CreateRoom.tsx` — owns room creation form state and the POST request
+- `MessageInput.tsx` — owns message input state and the sendMessage emit
+
+`ChatPage` is now reduced to layout, data fetching, and WebSocket event coordination.
+`CreateRoom` reads `token` directly from `AuthContext` rather than receiving it as a prop.
