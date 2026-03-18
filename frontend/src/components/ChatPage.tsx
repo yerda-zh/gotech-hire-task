@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Socket } from 'socket.io-client';
 import RoomList from './RoomList';
 import MessageItem from './MessageItem';
 import Header from '../class-components/Header.class';
+import { useAuth } from '../context/AuthContext';
+import { API_URL } from '../constants';
 
 interface Room {
   id: number;
@@ -14,87 +16,77 @@ interface Message {
   id: number;
   content: string;
   username: string;
-  senderName: string;
   createdAt: string;
+  userId: number;
 }
 
 interface Props {
-  token: string;
-  userId: number;
   socket: Socket;
-  apiUrl: string;
   onLogout: () => void;
 }
 
-export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Props) {
-  const [rooms, setRooms] = useState<any[]>([]);
+export default function ChatPage({ socket, onLogout }: Props) {
+  const { token, userId } = useAuth();
+  const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
-  const [messages, setMessages] = useState<any[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomDesc, setNewRoomDesc] = useState('');
   const [showCreateRoom, setShowCreateRoom] = useState(false);
-  const [username, setUsername] = useState('');
-  const [isConnected, setIsConnected] = useState(false);
+  const [isConnected, setIsConnected] = useState(socket.connected);
   const [loadingMessages, setLoadingMessages] = useState(false);
 
-  // FLAW: hardcoded URL (occurrence 4 of 4) - should use apiUrl prop
-  const HARDCODED_API = 'http://localhost:3000';
+  const fetchRooms = useCallback(async () => {
+  try {
+    const res = await fetch(`${API_URL}/chat/rooms`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    setRooms(Array.isArray(data) ? data : []);
+  } catch {
+    setRooms([]);
+  }
+}, [token]);
+
+  const fetchMessages = useCallback(async (roomId: number) => {
+    setLoadingMessages(true);
+    try {
+      const res = await fetch(`${API_URL}/chat/rooms/${roomId}/messages`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setMessages(Array.isArray(data.data) ? data.data : []);
+    } catch {
+      setMessages([]);
+    } finally {
+      setLoadingMessages(false);
+    }
+  }, [token]);
 
   useEffect(() => {
     fetchRooms();
-    fetchCurrentUser();
 
-    socket.on('connect', () => {
-      setIsConnected(true);
-    });
+    const onConnect = () => setIsConnected(true);
+    const onDisconnect = () => setIsConnected(false);
+    // appending new message directly w/out re-fetching
+    const onNewMessage = (message: Message) => {
+      setMessages(prev => [...prev, message]);
+    };
 
-    socket.on('disconnect', () => {
-      setIsConnected(false);
-    });
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('newMessage', onNewMessage);
 
-    // FLAW: on every WS message, re-fetches ALL messages via REST instead of just appending
-    socket.on('newMessage', (message: any) => {
-      console.log('New message received:', message);
-      // should just be: setMessages(prev => [...prev, message]);
-      if (selectedRoom) {
-        fetchMessages(selectedRoom.id); // re-fetches everything!
-      }
-    });
-
-    // FLAW: no socket.off() cleanup - causes memory leaks and duplicate handlers
-    // return () => { socket.off('newMessage'); socket.off('connect'); socket.off('disconnect'); };
-  }, []); // FLAW: missing deps [selectedRoom] - stale closure
-
-  const fetchCurrentUser = async () => {
-    // fetches all users just to find current user's username - very inefficient
-    const res = await fetch(`${HARDCODED_API}/users`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const users = await res.json();
-    const currentUser = users.find((u: any) => u.id === userId);
-    if (currentUser) {
-      setUsername(currentUser.username);
-    }
-  };
-
-  const fetchRooms = async () => {
-    const res = await fetch(`${HARDCODED_API}/chat/rooms`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await res.json();
-    setRooms(data);
-  };
-
-  const fetchMessages = async (roomId: number) => {
-    setLoadingMessages(true);
-    const res = await fetch(`${HARDCODED_API}/chat/rooms/${roomId}/messages`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await res.json();
-    setMessages(data);
-    setLoadingMessages(false);
-  };
+    // cleanup prevents memory leaks and duplicate handlers
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('newMessage', onNewMessage);
+    };
+  }, [socket, fetchRooms]);
 
   const handleRoomSelect = (room: Room) => {
     if (selectedRoom) {
@@ -105,23 +97,21 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
     fetchMessages(room.id);
   };
 
-  const handleSendMessage = async () => {
+  const handleSendMessage = () => {
     if (!newMessage.trim() || !selectedRoom) return;
 
+    // userId and senderName removed: server reads from verified JWT
     socket.emit('sendMessage', {
       roomId: selectedRoom.id,
-      userId,              // FLAW: client supplies userId - no server-side verification
       content: newMessage,
-      senderName: username,
     });
-
     setNewMessage('');
   };
 
   const handleCreateRoom = async () => {
     if (!newRoomName.trim()) return;
 
-    await fetch(`${HARDCODED_API}/chat/rooms`, {
+    await fetch(`${API_URL}/chat/rooms`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -137,12 +127,9 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleSendMessage();
-    }
+    if (e.key === 'Enter') handleSendMessage();
   };
 
-  // inline styles duplicated throughout - no CSS modules or styled-components
   const containerStyle: React.CSSProperties = {
     display: 'flex',
     height: '100vh',
@@ -180,8 +167,7 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
   return (
     <div style={containerStyle}>
       <div style={sidebarStyle}>
-        <Header username={username} isConnected={isConnected} onLogout={onLogout} />
-
+        <Header isConnected={isConnected} onLogout={onLogout} />
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
           <h3 style={{ margin: 0 }}>Rooms</h3>
           <button onClick={() => setShowCreateRoom(!showCreateRoom)} style={{ fontSize: '20px', cursor: 'pointer', border: 'none', background: 'none' }}>+</button>
@@ -205,15 +191,7 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
           </div>
         )}
 
-        {/* Prop drilling: passing token, socket, apiUrl down just to pass further */}
-        <RoomList
-          rooms={rooms}
-          selectedRoom={selectedRoom}
-          onSelectRoom={handleRoomSelect}
-          token={token}
-          socket={socket}
-          apiUrl={apiUrl}
-        />
+        <RoomList rooms={rooms} selectedRoom={selectedRoom} onSelectRoom={handleRoomSelect}/>
       </div>
 
       <div style={mainStyle}>
@@ -228,15 +206,11 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
               {loadingMessages ? (
                 <p>Loading messages...</p>
               ) : (
-                messages.map((msg, index) => (
-                  // FLAW: using array index as key
+                messages.map(msg => (
                   <MessageItem
-                    key={index}
+                    key={msg.id}
                     message={msg}
-                    isOwn={msg.user_id === userId}
-                    token={token}
-                    socket={socket}
-                    apiUrl={apiUrl}
+                    isOwn={msg.userId === userId}
                   />
                 ))
               )}
